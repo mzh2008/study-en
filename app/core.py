@@ -27,6 +27,16 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+def public_projection(kind, obj):
+    allowed = PUBLIC_SCENARIO if kind == "scenario" else PUBLIC_DAY if kind == "day" else set()
+    public = {key: obj[key] for key in allowed if key in obj}
+    if kind == "scenario":
+        public["variants"] = [{key: item[key] for key in PUBLIC_VARIANT if key in item} for item in obj.get("variants", []) if isinstance(item, dict)]
+    if kind == "day" and isinstance(public.get("scenarioRef"), dict):
+        public["scenarioRef"] = {key: public["scenarioRef"][key] for key in ("scenarioId", "variantId", "version") if key in public["scenarioRef"]}
+    return public
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -64,6 +74,11 @@ class Store:
         CREATE TABLE IF NOT EXISTS audit (
           id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
           action TEXT NOT NULL, target TEXT NOT NULL, at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+          scenario_id TEXT NOT NULL, scenario_version TEXT NOT NULL,
+          scenario_hash TEXT NOT NULL, rubric_refs_json TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
 
     def audit(self, actor, action, target):
@@ -123,9 +138,9 @@ class Store:
         return {"status": "WITHDRAWN"}
 
     def import_content(self, actor, kind, obj):
-        if kind not in ("scenario", "day", "rubric", "exam") or not isinstance(obj, dict):
+        if kind not in ("scenario", "day", "rubric", "exam", "unit", "sentence", "term") or not isinstance(obj, dict):
             raise DomainError("invalid_content")
-        id_key = {"scenario": "scenarioId", "day": "dayId", "rubric": "rubricId", "exam": "examFormId"}[kind]
+        id_key = {"scenario": "scenarioId", "day": "dayId", "rubric": "rubricId", "exam": "examFormId", "unit": "unitId", "sentence": "phraseId", "term": "termId"}[kind]
         content_id, version = obj.get(id_key), obj.get("version") or obj.get("contentVersion")
         if not isinstance(content_id, str) or not content_id or not isinstance(version, str) or not version:
             raise DomainError("content_id_version_required")
@@ -162,14 +177,36 @@ class Store:
         row = self.db.execute("SELECT object_json,status FROM content WHERE kind=? AND content_id=? AND version=?", (kind, content_id, version)).fetchone()
         if not row or row["status"] != "PUBLISHED":
             raise DomainError("content_not_available", 404)
-        obj = json.loads(row["object_json"])
-        allowed = PUBLIC_SCENARIO if kind == "scenario" else PUBLIC_DAY if kind == "day" else set()
-        public = {key: obj[key] for key in allowed if key in obj}
-        if kind == "scenario":
-            public["variants"] = [{key: item[key] for key in PUBLIC_VARIANT if key in item} for item in obj.get("variants", []) if isinstance(item, dict)]
-        if kind == "day" and isinstance(public.get("scenarioRef"), dict):
-            public["scenarioRef"] = {key: public["scenarioRef"][key] for key in ("scenarioId", "variantId", "version") if key in public["scenarioRef"]}
-        return public
+        return public_projection(kind, json.loads(row["object_json"]))
+
+    def start_session(self, user_id, scenario_id, version):
+        user = self.require_training(user_id)
+        row = self.db.execute("SELECT object_json,object_hash FROM content WHERE kind='scenario' AND content_id=? AND version=? AND status='PUBLISHED'", (scenario_id, version)).fetchone()
+        if not row:
+            raise DomainError("content_not_available", 404)
+        scenario = json.loads(row["object_json"])
+        if scenario.get("track") not in ("common", user["track"]):
+            raise DomainError("content_not_available", 404)
+        rubrics = {}
+        for label, field in (("job", "rubricVersion"), ("language", "languageRubricVersion")):
+            rubric_id = scenario.get(field)
+            if not isinstance(rubric_id, str):
+                raise DomainError("rubric_reference_missing", 409)
+            matches = self.db.execute("SELECT version,object_hash FROM content WHERE kind='rubric' AND content_id=? AND status='PUBLISHED'", (rubric_id,)).fetchall()
+            if len(matches) != 1:
+                raise DomainError("rubric_reference_ambiguous", 409)
+            rubrics[label] = {"id": rubric_id, "version": matches[0]["version"], "sha256": matches[0]["object_hash"]}
+        session_id = secrets.token_urlsafe(24)
+        self.db.execute("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)", (session_id, user_id, scenario_id, version, row["object_hash"], canonical(rubrics), row["object_json"], now()))
+        self.audit(user_id, "START_SESSION", f"{scenario_id}:{version}")
+        return {"sessionId": session_id, "scenario": {"id": scenario_id, "version": version, "sha256": row["object_hash"]}, "rubrics": rubrics, "public": self.public_content(user_id, "scenario", scenario_id, version)}
+
+    def get_session(self, user_id, session_id):
+        self.require_training(user_id)
+        row = self.db.execute("SELECT scenario_id,scenario_version,scenario_hash,rubric_refs_json,snapshot_json FROM sessions WHERE id=? AND user_id=?", (session_id, user_id)).fetchone()
+        if not row:
+            raise DomainError("session_not_found", 404)
+        return {"sessionId": session_id, "scenario": {"id": row["scenario_id"], "version": row["scenario_version"], "sha256": row["scenario_hash"]}, "rubrics": json.loads(row["rubric_refs_json"]), "public": public_projection("scenario", json.loads(row["snapshot_json"]))}
 
     def course(self, user_id):
         user = self.require_training(user_id)
@@ -178,7 +215,7 @@ class Store:
         candidates = self.db.execute("SELECT object_json FROM content WHERE kind='day' AND status='PUBLISHED'").fetchall()
         items = [json.loads(x["object_json"]) for x in candidates]
         matching = [x for x in items if x.get("track") == user["track"] and x.get("courseDay") == day]
-        public = {key: matching[0][key] for key in PUBLIC_DAY if key in matching[0]} if len(matching) == 1 else None
+        public = public_projection("day", matching[0]) if len(matching) == 1 else None
         return {"nextDay": day, "status": row["status"] if row else "ACTIVE", "day": public, "assessment": "UNTESTED"}
 
     def complete_day(self, user_id, evidence_id):

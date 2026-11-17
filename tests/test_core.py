@@ -73,6 +73,27 @@ class FoundationTest(unittest.TestCase):
         self.assertEqual(self.store.course(self.learner)["nextDay"], 2)
         self.assert_error("published_day_missing_or_ambiguous", lambda: self.store.complete_day(self.learner, "fixture-evidence:turn-2"))
 
+    def test_session_pins_content_and_rubric_hashes(self):
+        self.onboard()
+        scenario = {"scenarioId": "C01", "version": "1.0-sandbox", "track": "common", "publicBrief": "Ask scope", "privateFacts": [{"value": "server only"}], "rubricVersion": "JOB-R1", "languageRubricVersion": "LANG-R1", "releaseAllowed": True}
+        self.store.import_content("fixture:editor", "scenario", scenario)
+        self.assert_error("content_not_available", lambda: self.store.start_session(self.learner, "C01", "1.0-sandbox"))
+        self.store.review_content("fixture:reviewer", "scenario", "C01", "1.0-sandbox")
+        for rubric_id in ("JOB-R1", "LANG-R1"):
+            self.store.import_content("fixture:editor", "rubric", {"rubricId": rubric_id, "version": "1.0-sandbox", "releaseAllowed": True})
+            self.store.review_content("fixture:reviewer", "rubric", rubric_id, "1.0-sandbox")
+        session = self.store.start_session(self.learner, "C01", "1.0-sandbox")
+        self.assertEqual(len(session["scenario"]["sha256"]), 64)
+        self.assertEqual(session["rubrics"]["job"]["id"], "JOB-R1")
+        self.assertNotIn("privateFacts", str(session))
+        other = "fixture:learner-2"
+        self.store.login_sandbox(other)
+        self.store.onboard(other, True, "sandbox-v1", "development", 5)
+        self.assert_error("session_not_found", lambda: self.store.get_session(other, session["sessionId"]))
+        self.assertEqual(self.store.get_session(self.learner, session["sessionId"]), session)
+        self.store.db.execute("UPDATE content SET status='UNPUBLISHED' WHERE kind='scenario' AND content_id='C01'")
+        self.assertEqual(self.store.get_session(self.learner, session["sessionId"]), session)
+
 
 if __name__ == "__main__":
     unittest.main()

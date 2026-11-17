@@ -56,6 +56,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.store.course(actor)
         if method == "POST" and path == ["v1", "course", "complete-fixture"]:
             return self.store.complete_day(actor, self.read_json().get("evidenceId"))
+        if method == "POST" and path == ["v1", "sessions"]:
+            body = self.read_json()
+            return self.store.start_session(actor, body.get("scenarioId"), body.get("version"))
+        if method == "GET" and len(path) == 3 and path[:2] == ["v1", "sessions"]:
+            return self.store.get_session(actor, path[2])
         if method == "GET" and len(path) == 5 and path[:2] == ["v1", "content"]:
             return self.store.public_content(actor, path[2], path[3], path[4])
         if method == "POST" and len(path) == 4 and path[:2] == ["v1", "admin"] and path[2] == "import":
