@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>职说AI 内容运营 · 隔离演示</title>
+<style>body{font:16px system-ui;max-width:52rem;margin:2rem auto;padding:0 1rem;color:#173047}label,textarea,input,select,button{display:block;margin:.8rem 0}textarea{width:100%;height:15rem}button{padding:.6rem 1rem}pre{white-space:pre-wrap;background:#f3f6f9;padding:1rem} .warn{color:#a52222}</style>
+<h1>职说AI 内容运营 · 隔离演示</h1>
+<p class="warn">仅用于本机合成数据。草稿不会进入学员训练；此页面不提供真实发布或支付操作。</p>
+<label>角色 <select id="role"><option value="editor">内容编辑</option><option value="reviewer">独立审核员</option></select></label>
+<label>内容类型 <select id="kind"><option value="scenario">场景</option><option value="day">课程日</option><option value="rubric">评分规则</option><option value="exam">考核</option></select></label>
+<label>JSON 对象 <textarea id="object" spellcheck="false">{"scenarioId":"C01","version":"0.1.0-draft","track":"common","title":"演示场景","publicBrief":"请主动澄清需求","privateFacts":[],"releaseAllowed":false}</textarea></label>
+<button id="import">导入不可变草稿</button><pre id="result" role="status"></pre>
+<button id="review">审核并发布隔离内容（需 releaseAllowed=true）</button>
+<script>
+const api = 'http://127.0.0.1:8080';
+document.getElementById('import').onclick = async () => {
+  const output = document.getElementById('result');
+  try {
+    const role = document.getElementById('role').value;
+    const login = await fetch(api + '/v1/auth/fixture-login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:'fixture:' + role})});
+    const {token} = await login.json();
+    const kind = document.getElementById('kind').value;
+    const response = await fetch(api + '/v1/admin/import/' + kind, {method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer ' + token},body:document.getElementById('object').value});
+    output.textContent = JSON.stringify(await response.json(),null,2);
+  } catch (error) { output.textContent = error.message; }
+};
+document.getElementById('review').onclick = async () => {
+  const output = document.getElementById('result');
+  try {
+    const obj = JSON.parse(document.getElementById('object').value);
+    const kind = document.getElementById('kind').value;
+    const key = {scenario:'scenarioId',day:'dayId',rubric:'rubricId',exam:'examFormId'}[kind];
+    const id = obj[key], version = obj.version || obj.contentVersion;
+    if (!id || !version) throw new Error('需要 ID 和版本');
+    const login = await fetch(api + '/v1/auth/fixture-login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:'fixture:reviewer'})});
+    const {token} = await login.json();
+    const path = [kind,id,version].map(encodeURIComponent).join('/');
+    const response = await fetch(api + '/v1/admin/review/' + path, {method:'POST',headers:{Authorization:'Bearer ' + token}});
+    output.textContent = JSON.stringify(await response.json(),null,2);
+  } catch (error) { output.textContent = error.message; }
+};
+</script></html>

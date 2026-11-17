@@ -1,0 +1,13 @@
+<view class="page">
+  <view class="title">职说AI · 隔离演示</view>
+  <view>当前仅展示账号、课程与内容版本基座。未接入真实微信登录、录音或支付。</view>
+  <picker mode="selector" range="{{['软件开发','实施支持']}}" bindchange="chooseTrack"><view class="field">岗位方向：{{track === 'development' ? '软件开发' : '实施支持'}}</view></picker>
+  <switch checked="{{adult}}" bindchange="changeAdult" aria-label="确认已满十八岁" /> 已满18岁
+  <switch checked="{{consent}}" bindchange="changeConsent" aria-label="同意隔离演示说明" /> 同意隔离演示说明
+  <button bindtap="start" loading="{{loading}}">进入课程</button>
+  <view wx:if="{{course}}">课程进度：Day {{course.nextDay}}；摸底：{{course.assessment}}</view>
+  <view wx:if="{{course && course.day}}">今日任务：{{course.day.microSpeakingTask}}</view>
+  <view wx:if="{{course && !course.day}}">暂无可用的审核发布课程内容。</view>
+  <button wx:if="{{course}}" bindtap="withdraw">撤回同意</button>
+  <view wx:if="{{error}}" class="error" role="alert">{{error}}</view>
+</view>
